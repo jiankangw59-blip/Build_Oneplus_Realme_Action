@@ -406,9 +406,14 @@ jobs:
 
       - name: 🔧 Apply Sched Patch (应用完美风驰补丁)
         run: |
+          FORCE_SCX=false
+          if [ "${{ env.ENABLE_DROIDSPACES }}" = "true" ] && [ "${{ env.ENABLE_SCX }}" != "true" ]; then
+            echo "::notice::Droidspaces 依赖完美风驰 (SCX)，已自动启用 SCX 补丁"
+            FORCE_SCX=true
+          fi
           if [ "$SCHED_FILE" = "none" ]; then
             echo "该机型自带风驰，跳过所有补丁应用"
-          else
+          elif [ "${{ env.ENABLE_SCX }}" = "true" ] || [ "$FORCE_SCX" = "true" ]; then
             cd kernel_workspace/common
             if [ "${DEVICES_NAME}" = "oneplus_ace5_ultra" ] || [ "${DEVICES_NAME}" = "realme_GT7" ] || [ "${DEVICES_NAME}" = "oneplus_pad_2" ]; then
               git clone https://github.com/Numbersf/SCHED_PATCH.git -b "mt6991"
