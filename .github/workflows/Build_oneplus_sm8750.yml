@@ -91,6 +91,7 @@ jobs:
       ENABLE_ADIOS:           ${{ github.event.inputs.enable_Adios }}
       ENABLE_SCX:             ${{ github.event.inputs.enable_scx }}
       ENABLE_BBG:             ${{ github.event.inputs.enable_bbg }}
+      ENABLE_KSU:             'true'
     outputs:
       ksuver: ${{ steps.ksu_step.outputs.ksuver }}
     steps:
@@ -784,10 +785,23 @@ jobs:
 
       - name: 📦 Make AnyKernel3 (创建Anykernel3)
         run: |
+          IMAGE_PATH="${GITHUB_WORKSPACE}/kernel_workspace/common/out/arch/arm64/boot/Image"
+          if [ ! -s "$IMAGE_PATH" ]; then
+            echo "::error::Kernel Image is missing or empty: $IMAGE_PATH"
+            exit 1
+          fi
+          if [ -z "${KSUVER:-}" ]; then
+            echo "::error::KSUVER is empty; ReSukiSU setup did not complete"
+            exit 1
+          fi
           cp "${GITHUB_WORKSPACE}/.github/workflows/tools/main.bin" ./
           chmod +x main.bin
           ./main.bin "make_anykernel3"
           rm -rf ./main.bin
+          if [ ! -s "./AnyKernel3/TG频道@qdykernel.7z" ]; then
+            echo "::error::AnyKernel3 kernel payload is missing"
+            exit 1
+          fi
           
       - name: 📤 Upload AnyKernel3 (上传 Anykernel3)
         uses: actions/upload-artifact@v6
