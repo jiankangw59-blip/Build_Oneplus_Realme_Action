@@ -29,6 +29,15 @@ on:
           - 'realme_GT8'
         default: 'oneplus_ace5_pro'
 
+      kernel_version:
+        description: "Ace 6 kernel version"
+        required: true
+        type: choice
+        options:
+          - '6.6.89'
+          - '6.6.118'
+        default: '6.6.89'
+
       custom_kernel_suffix:
         description: "✏️ 自定义内核名称- (-开头 留空则默认官方）"
         required: false
@@ -83,6 +92,7 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       DEVICES_NAME:           ${{ github.event.inputs.device_name }}
+      KERNEL_VERSION:         ${{ github.event.inputs.kernel_version }}
       CUSTOM_KERNEL_SUFFIX:   ${{ github.event.inputs.custom_kernel_suffix }}
       CUSTOM_KERNEL_TIME:     ${{ github.event.inputs.custom_kernel_time }}
       ENABLE_SUSFS:           ${{ github.event.inputs.enable_susfs }}
@@ -146,6 +156,26 @@ jobs:
               echo "IMAGENAME=Image_Rm_GT_8" >> $GITHUB_ENV
               echo "SCHED_FILE=oneplus_ace_6" >> $GITHUB_ENV
           esac
+
+          if [ "${DEVICES_NAME}" = "oneplus_ace_6" ]; then
+            case "${KERNEL_VERSION}" in
+              6.6.89)
+                KERNEL_SOURCE_REF='c1802dd6f3343e71c166a3c67c50554c81880b6e'
+                ;;
+              6.6.118)
+                KERNEL_SOURCE_REF='65b954a773b183a9999b06bb1b2f921f12eaaf11'
+                ;;
+              *)
+                echo "::error::Unsupported Ace 6 kernel version: ${KERNEL_VERSION}"
+                exit 1
+                ;;
+            esac
+            echo "KERNEL_SOURCE_REF=${KERNEL_SOURCE_REF}" >> $GITHUB_ENV
+            echo "Ace 6 kernel source: ${KERNEL_VERSION} (${KERNEL_SOURCE_REF})"
+          else
+            echo "Kernel version selector is only applied to oneplus_ace_6; using the selected device branch."
+          fi
+
           if [ -z "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
             case "${{ env.DEVICES_NAME }}" in
              oneplus_pad_2_pro)
@@ -154,7 +184,14 @@ jobs:
             oneplus_ace5_ultra)
                 DEFAULT_SUFFIX='-android15-8-ge58033dc8ea6-abogki498046332-4k'
               ;;
-            oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+            oneplus_ace_6)
+                if [ "${KERNEL_VERSION}" = "6.6.89" ]; then
+                  DEFAULT_SUFFIX='-android15-8-g7e1f3c083cc6-abogki467167594-4k'
+                else
+                  DEFAULT_SUFFIX='-android15-8-g93e223c276e7-abogki500782043-4k'
+                fi
+              ;;
+            oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_pad_2 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                 DEFAULT_SUFFIX='-android15-8-g93e223c276e7-abogki500782043-4k'
               ;;
             realme_GT7pro)
@@ -180,7 +217,14 @@ jobs:
               oneplus_ace5_ultra)
                   KERNEL_TIME='Sun Mar 29 12:31:26 UTC 2026'
                 ;;
-              oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 |realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+              oneplus_ace_6)
+                  if [ "${KERNEL_VERSION}" = "6.6.89" ]; then
+                    KERNEL_TIME='Mon Dec 8 04:00:43 UTC 2025'
+                  else
+                    KERNEL_TIME='Wed Apr  8 15:08:30 UTC 2026'
+                  fi
+                ;;
+              oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_pad_2 |realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                   KERNEL_TIME='Wed Apr  8 15:08:30 UTC 2026'
                 ;;
               realme_GT7pro)
@@ -219,9 +263,22 @@ jobs:
             unzip -q common.zip && 
             mv "android_kernel_oneplus_mt6991-oneplus-${REPO_MANIFEST}" common
           else
-            aria2c -s16 -x16 -k1M https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750/archive/refs/heads/oneplus/${REPO_MANIFEST}.zip -o common.zip
-            unzip -q common.zip && 
-            mv "android_kernel_common_oneplus_sm8750-oneplus-${REPO_MANIFEST}" common
+            if [ -n "${KERNEL_SOURCE_REF}" ]; then
+              SOURCE_URL="https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750/archive/${KERNEL_SOURCE_REF}.zip"
+            else
+              SOURCE_URL="https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8750/archive/refs/heads/oneplus/${REPO_MANIFEST}.zip"
+            fi
+            aria2c -s16 -x16 -k1M "${SOURCE_URL}" -o common.zip
+            SOURCE_DIR="$(unzip -Z1 common.zip | head -n 1 | cut -d/ -f1)"
+            unzip -q common.zip
+            mv "${SOURCE_DIR}" common
+          fi
+          ACTUAL_KERNEL_VERSION="$(make -s -C common kernelversion)"
+          echo "Selected kernel version: ${KERNEL_VERSION}"
+          echo "Actual source version: ${ACTUAL_KERNEL_VERSION}"
+          if [ "${DEVICES_NAME}" = "oneplus_ace_6" ] && [ "${ACTUAL_KERNEL_VERSION}" != "${KERNEL_VERSION}" ]; then
+            echo "::error::Kernel source version mismatch: selected ${KERNEL_VERSION}, got ${ACTUAL_KERNEL_VERSION}"
+            exit 1
           fi
           rm -rf common.zip 
           echo "正在克隆 llvm-clang18 工具链..."
