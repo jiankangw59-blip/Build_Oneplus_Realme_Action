@@ -73,6 +73,18 @@
 
 ## 🔧 高级功能
 
+#### 选择 ZRAM 补丁
+
+运行 `Build_oneplus_sm8750` 时，可在 `zram_patch` 下拉框中选择：
+
+- `LZ4`：LZ4 1.10.0 与 ZSTD 1.5.7 补丁，默认值，保持原工作流行为。
+- `LZ4KD`：编译内置 ZRAM、LZ4K/LZ4KD/LZ4K Oplus 支持，并将内核 ZRAM 默认压缩器设为 LZ4KD；与上述 LZ4/ZSTD 升级补丁互斥。
+- `DISABLE`：不应用这两组额外补丁，使用所选内核源码原有的压缩实现。
+
+Release 的功能配置会记录本次选择。
+
+LZ4KD 使用与 [op_ace6_kbuild](https://github.com/jiankangw59-blip/op_ace6_kbuild/blob/main/.github/workflows/build-custom.yml) 相同来源的[一体补丁](https://github.com/luyancib-org/kernel_patches/blob/1434ad8799fe267aeae7d91fb667473d80c8f73d/other/lz4kd.patch)，固定提交并校验 SHA256。附带的小补丁保留拒绝重复加载内置模块时的 `-EPERM` 返回值。Android 或其他模块仍可能在运行时指定不同的 ZRAM 压缩器。
+
 
 #### 使用公共缓存
 
