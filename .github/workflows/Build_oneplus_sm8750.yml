@@ -695,7 +695,9 @@ jobs:
         run: |
           cd kernel_workspace/common
           echo "正在启用 BBG 基带守护…"
-          curl -LSs https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/028ff7fd509e2104596da7cc1ef8e6ce2a0c9082/setup.sh | bash -s 028ff7fd509e2104596da7cc1ef8e6ce2a0c9082
+          curl -LSs https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/028ff7fd509e2104596da7cc1ef8e6ce2a0c9082/setup.sh | bash
+          git -C ./Baseband-guard fetch --depth=1 origin 028ff7fd509e2104596da7cc1ef8e6ce2a0c9082
+          git -C ./Baseband-guard checkout --detach 028ff7fd509e2104596da7cc1ef8e6ce2a0c9082
           sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' ./security/Kconfig
 
           
