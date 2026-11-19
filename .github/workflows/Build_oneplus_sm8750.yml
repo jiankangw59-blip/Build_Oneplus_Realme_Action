@@ -708,7 +708,8 @@ jobs:
           echo "正在配置BakaSU..."
           curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/516d3e87fbc986ccefdde2c2765f1700612441a9/kernel/setup.sh" | bash -s 516d3e87fbc986ccefdde2c2765f1700612441a9
           cd ./KernelSU 
-          KSU_VERSION=$(expr $(git rev-list --count main) + 30700 2>/dev/null || echo 114514)
+           # Keep the historical run-12 BakaSU version code aligned with the pinned commit.
+           KSU_VERSION=35257
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
           
