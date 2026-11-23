@@ -71,7 +71,7 @@ on:
         type: boolean
         
       enable_ReKernel:
-        description: "添加Re-Kernel支持"
+        description: "将 Re-Kernel 内置到内核"
         required: true
         default: false
         type: boolean
@@ -336,6 +336,9 @@ jobs:
           if [ "${{ env.ENABLE_DROIDSPACES }}" = "true" ]; then
             CACHE_VARIANT="${CACHE_VARIANT}-ds"
           fi
+          if [ "$ENABLE_REKERNEL" = "true" ]; then
+            CACHE_VARIANT="${CACHE_VARIANT}-rekernel"
+          fi
           echo "CACHE_VARIANT=$CACHE_VARIANT" >> $GITHUB_ENV
           echo "当前构建内核机型：${{ env.DEVICES_NAME }}，缓存变体：${CACHE_VARIANT:-(无)}"
           echo "当前磁盘空间："
@@ -520,31 +523,25 @@ jobs:
           fi
           
 
-      - name: 🔧 Add Re-Kernel Support (添加 Re-Kernel 支持)
+      - name: 🔧 Build Re-Kernel into the kernel (内置 Re-Kernel)
         if: ${{ env.ENABLE_REKERNEL == 'true' }}
         run: |
-            cd kernel_workspace
-            VERSION=$(awk -F'=' '/^VERSION[ \t]*=/ {gsub(/ /,"",$2); print $2}' common/Makefile)
-            PATCHLEVEL=$(awk -F'=' '/^PATCHLEVEL[ \t]*=/ {gsub(/ /,"",$2); print $2}' common/Makefile)
-            echo "内核版本: ${VERSION}.${PATCHLEVEL}"
-            [ ! -d "Re-Kernel" ] && git clone --depth 1 https://github.com/Sakion-Team/Re-Kernel.git
-            RE_DIR="${GITHUB_WORKSPACE}/kernel_workspace/Re-Kernel/LKM-Source"
-            cd common
-            grep -q 'source "drivers/rekernel/Kconfig"' drivers/Kconfig || \
-              sed -i '/endmenu/i source "drivers/rekernel/Kconfig"' drivers/Kconfig
-            grep -q 'obj-$(CONFIG_REKERNEL)' drivers/Makefile || \
-              printf '\n# Re-Kernel\nobj-$(CONFIG_REKERNEL) += rekernel/\n' >> drivers/Makefile
-            mkdir -p drivers/rekernel
-            cp ${RE_DIR}/* drivers/rekernel/
-            TARGET="KERNEL_${VERSION}_${PATCHLEVEL}"
-            if grep -q "$TARGET" drivers/rekernel/rekernel.h; then
-              sed -i "s|^[[:space:]]*//[[:space:]]*#define[[:space:]]\+$TARGET|#define $TARGET|" drivers/rekernel/rekernel.h
-              echo "CONFIG_REKERNEL=m" >> arch/arm64/configs/gki_defconfig
-              echo "CONFIG_REKERNEL_NETWORK=y" >> arch/arm64/configs/gki_defconfig
-              echo "✅ Re-Kernel 配置完成"
-            else
-              echo "⚠️ 不支持的内核版本: $TARGET"
-            fi
+          set -euo pipefail
+          REKERNEL_COMMIT='ac08296174d7fb2801c0eee1084f067a34f8a0fe'
+          cd kernel_workspace
+          git init -q Re-Kernel
+          git -C Re-Kernel fetch --depth=1 https://github.com/Sakion-Team/Re-Kernel.git "$REKERNEL_COMMIT"
+          git -C Re-Kernel checkout --quiet --detach FETCH_HEAD
+          mkdir -p common/drivers/rekernel preflash
+          git -C Re-Kernel rev-parse HEAD > preflash/rekernel-commit.txt
+          cp Re-Kernel/LKM-Source/{*.c,*.h,Kconfig,Makefile} common/drivers/rekernel/
+          cd common
+          patch --directory=drivers/rekernel --strip=1 --fuzz=0 < "$GITHUB_WORKSPACE/patch/rekernel-builtin.patch"
+          grep -Fqx 'source "drivers/rekernel/Kconfig"' drivers/Kconfig ||
+            printf '\nsource "drivers/rekernel/Kconfig"\n' >> drivers/Kconfig
+          grep -Fqx 'obj-$(CONFIG_REKERNEL) += rekernel/' drivers/Makefile ||
+            printf '\nobj-$(CONFIG_REKERNEL) += rekernel/\n' >> drivers/Makefile
+          scripts/config --file arch/arm64/configs/gki_defconfig --enable REKERNEL
 
       - name: 🔧 Apply Screen Flickering Fix (应用屏幕闪烁修复补丁)
         run: |
@@ -911,6 +908,13 @@ jobs:
           sudo rm -rf /opt/ghc &
           sudo rm -rf /opt/hostedtoolcache/CodeQL &
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="ccache clang" LD="ld.lld" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error gki_defconfig
+          if [ "$ENABLE_REKERNEL" = 'true' ]; then
+            if ! grep -Fxq 'CONFIG_REKERNEL=y' out/.config; then
+              echo "::error::Re-Kernel did not resolve to CONFIG_REKERNEL=y"
+              exit 1
+            fi
+            echo "CONFIG_REKERNEL=y"
+          fi
           if [ "$ZRAM_PATCH" = 'LZ4KD' ]; then
             for symbol in ZRAM ZSMALLOC CRYPTO_LZ4K CRYPTO_LZ4KD CRYPTO_LZ4K_OPLUS CRYPTO_DEFLATE ZRAM_DEF_COMP_LZ4KD; do
               if ! grep -qx "CONFIG_${symbol}=y" out/.config; then
@@ -941,6 +945,14 @@ jobs:
           fi
 
           make -j$(nproc --all) LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CC="$(pwd)/cc-wrapper" LD="$(pwd)/ld-wrapper" HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error Image 2>&1 | tee build.log
+
+          if [ "$ENABLE_REKERNEL" = 'true' ]; then
+            if ! grep -E '[[:space:]]__initcall__.*_start_rekernel7$' out/System.map |
+              tee ../preflash/rekernel-initcall.txt; then
+              echo "::error::Re-Kernel initcall is missing from the linked kernel"
+              exit 1
+            fi
+          fi
 
           BUILT_KSU_VERSION="$(grep -oE '(BakaSU|ReSukiSU) version code: [0-9]+' build.log | awk '{print $NF}' | tail -n 1 || true)"
           if [ -z "$BUILT_KSU_VERSION" ]; then
@@ -1065,103 +1077,10 @@ jobs:
          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_BakaSU
          path: ./AnyKernel3/*
 
-  upload_rekernel:
-    name: Upload Re-Kernel Module
-    if: ${{ github.event.inputs.enable_ReKernel == 'true' }}
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: 🔎 Find Re-Kernel module zip (查找Re-Kernel最新模块并下载)
-        id: download-rekernel
-        uses: actions/github-script@v8
-        env:
-          KERNEL_MAJOR: "6.6"
-        with:
-          script: |
-            const owner = 'Sakion-Team';
-            const repo = 'Re-Kernel';
-            const kernelMajor = process.env.KERNEL_MAJOR;
-
-            core.info(`正在获取 ${owner}/${repo} 的最新 release...`);
-
-            const release = await github.rest.repos.getLatestRelease({
-              owner,
-              repo,
-            });
-            core.info(`最新版本: ${release.data.tag_name}`);
-            const escapedKernel = kernelMajor.replace(/\./g, '\\.');
-            const pattern66 = new RegExp(`^Re-Kernel-v([\\d.]+)-${escapedKernel}\\.zip$`);
-            const patternAny = new RegExp(`^Re-Kernel.*\\.zip$`, 'i');
-
-            let targetAsset = null;
-            let versionNumber = '';
-            let isExactMatch = false;
-
-            for (const asset of release.data.assets || []) {
-              const match = asset.name.match(pattern66);
-              if (match) {
-                targetAsset = asset;
-                versionNumber = match[1];
-                isExactMatch = true;
-                core.info(`找到精确匹配 6.6: ${asset.name}`);
-                break;
-              }
-            }
-
-            if (!targetAsset) {
-              core.info('未找到6.6版本，查找任意Re-Kernel模块...');
-              for (const asset of release.data.assets || []) {
-                const match = asset.name.match(patternAny);
-                if (match) {
-                  targetAsset = asset;
-                  versionNumber = asset.name.replace(/Re-Kernel-v|.zip/gi, '').replace(/^-/, '').replace(/-$/, '') || 'latest';
-                  isExactMatch = false;
-                  core.info(`找到Re-Kernel模块: ${asset.name}`);
-                  break;
-                }
-              }
-            }
-
-            if (!targetAsset) {
-              core.setFailed('未找到任何 Re-Kernel 模块资产');
-              return;
-            }
-
-            core.info(`找到目标资产: ${targetAsset.name} (版本: ${versionNumber}, ${(targetAsset.size / 1024).toFixed(1)} KB)`);
-            core.setOutput('asset-name', targetAsset.name);
-            core.setOutput('download-url', targetAsset.browser_download_url);
-            core.setOutput('version-number', versionNumber);
-
-      - name: 📥 Download Re-Kernel module (下载 Re-Kernel 模块)
-        env:
-          ASSET_NAME: ${{ steps.download-rekernel.outputs.asset-name }}
-          DOWNLOAD_URL: ${{ steps.download-rekernel.outputs.download-url }}
-          VERSION_NUMBER: ${{ steps.download-rekernel.outputs.version-number }}
-        run: |
-          set -euo pipefail
-          ARTIFACT_NAME="Re-Kernel-v${VERSION_NUMBER}"
-          echo "正在下载 Re-Kernel 模块: $ASSET_NAME"
-          echo "下载地址: $DOWNLOAD_URL"
-          echo "Artifact 名称: $ARTIFACT_NAME"
-          aria2c -s16 -x16 -k1M "$DOWNLOAD_URL" -o "$ASSET_NAME"
-          echo "✓ Re-Kernel 模块下载完成"
-          ls -lh "$ASSET_NAME"
-          echo "正在创建目录 $ARTIFACT_NAME 并解压模块..."
-          mkdir -p "$ARTIFACT_NAME"
-          unzip -q "$ASSET_NAME" -d "$ARTIFACT_NAME"
-          echo "✓ 目录结构:"
-          ls -lR "$ARTIFACT_NAME"
-
-      - name: 📤 Upload Re-Kernel module (上传 Re-Kernel 模块)
-        uses: actions/upload-artifact@v6
-        with:
-          name: Re-Kernel-v${{ steps.download-rekernel.outputs.version-number }}
-          path: Re-Kernel-v${{ steps.download-rekernel.outputs.version-number }}
-
   release:
     name: 📤 Create Release (创建发布)
-    needs: [build, upload_rekernel]
-    if: ${{ github.event.inputs.enable_release == 'true' && always() && needs.build.result != 'failure' }}
+    needs: build
+    if: ${{ github.event.inputs.enable_release == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -1185,15 +1104,6 @@ jobs:
               name=$(basename "$ak3_dir")
               echo "打包 AK3: $name"
               (cd "$ak3_dir" && zip -qr "../${name}.zip" .)
-            fi
-          done
-
-          # 如果 Re-Kernel 模块存在，打包为 zip
-          for rk_dir in ./release_assets/Re-Kernel-v*/; do
-            if [ -d "$rk_dir" ]; then
-              name=$(basename "$rk_dir")
-              echo "打包 Re-Kernel: $name"
-              (cd "$rk_dir" && zip -qr "../${name}.zip" .)
             fi
           done
 
@@ -1232,8 +1142,10 @@ jobs:
               FEATURES="${FEATURES}- ZRAM：不应用额外压缩补丁"$'\n'
               ;;
           esac
+          REKERNEL_INSTALL_STEP=""
           if [ "${{ github.event.inputs.enable_ReKernel }}" = "true" ]; then
-            FEATURES="${FEATURES}- ✅ Re-Kernel 支持"$'\n'
+            FEATURES="${FEATURES}- ✅ Re-Kernel 内置"$'\n'
+            REKERNEL_INSTALL_STEP="3. 使用内置 Re-Kernel 前，请先停用已安装的 Re-Kernel 模块，再配合兼容的 NoActive 版本使用。"
           fi
           if [ "${{ github.event.inputs.enable_Adios }}" = "true" ]; then
             FEATURES="${FEATURES}- ✅ ADIOS IO调度器"$'\n'
@@ -1290,7 +1202,7 @@ jobs:
 
           1. 若你已刷入 BakaSU 内核，且 BakaSU 管理器已更新至最新版本，可在管理器中直接刷入 AnyKernel 刷机包并重启；
           2. 由于 KernelSU 上游更新了元模块功能，最新版 KSU 管理器需要配合元模块 (metamodule) 才能正常挂载模块。目前的元模块包括 [meta overlayfs](https://github.com/KernelSU-Modules-Repo/meta-overlayfs), [mountify](https://github.com/backslashxx/mountify), [meta magicmount](https://github.com/7a72/meta-magic_mount/) 等。若你是第一次使用 KSU 或刚从旧版 KSU 管理器升级至新版，请先安装一个元模块；
-          3. 若启用 Re-Kernel，需刷入配套Re-Kernel模块并配合 NoActive 软件使用，以提升后台冻结能力。
+          ${REKERNEL_INSTALL_STEP}
 
           #### 🔗 相关链接
 
@@ -1307,8 +1219,7 @@ jobs:
           cat release_notes.md
           echo ""
 
-          # 收集所有待上传的文件（仅 AK3 zip 和 Re-Kernel zip）
-          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f \( -name 'AK3_*.zip' -o -name 'Re-Kernel-v*.zip' \) 2>/dev/null || true)
+          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f -name 'AK3_*.zip' 2>/dev/null || true)
 
           if [ -z "$RELEASE_FILES" ]; then
             echo "::warning::没有找到待上传的发布文件"
