@@ -171,9 +171,11 @@ def verify(args):
     if args.kernel_version == "6.6.118":
         path = pathlib.Path(__file__).with_name("kmi") / "plq110-6.6.118-layouts.json.gz"
         snapshot = path.read_bytes()
-        if hashlib.sha256(snapshot).hexdigest() != "6d61bb7c0bd20530ddfe15c6158aecfe4cf207a8bb0b5d33682862901459ec09":
+        if hashlib.sha256(snapshot).hexdigest() != "9ff9be35a1ee231051cd4ab5a12633948958063b67c390d2943fb07a9c2bf579":
             raise RuntimeError("Unreviewed 6.6.118 KMI layout baseline")
-        scan_control = json.loads(gzip.decompress(snapshot))["structs"]["scan_control"]
+        version_layouts = json.loads(gzip.decompress(snapshot))
+        scan_control = version_layouts["structs"]["scan_control"]
+        expected_layouts.update(version_layouts["additional_structures"])
         # The pinned OnePlus source keeps the 6.6.89 OEM scheduler layout
         # with SCHED_CLASS_EXT enabled, adding dmabuf_info in task KABI slot 3.
         # Keep every other task field and the entire OEM rq layout exact.
@@ -217,7 +219,7 @@ def verify(args):
     report = {"checked_imports": checked, "failures": failures, "passed": not failures,
               "actual_structures": actual,
               "memory_structures": memory_actual,
-              "scope": "GKI CRCs referenced by baseline loaded OEM modules and six explicit BTF structure layouts; runtime module loading remains required."}
+              "scope": "GKI CRCs referenced by baseline loaded OEM modules and explicit BTF structure layouts; runtime module loading remains required."}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({"checked_imports": checked, "passed": not failures,

@@ -63,6 +63,22 @@
       "file": "patches/psi-cgroup-rtpoll-6.6.152.patch",
       "sha256": "2baa036c3a4fe095761b8e7e2cd4b4f3bd8acbc5cfb30c93edb75fdaee64c07d",
       "source": "https://git.kernel.org/stable/c/310b5a537a78c358a4cd244bd767c1a517a05459"
+    },
+    {
+      "file": "patches/slub-delay-freezing-6.6.118.patch",
+      "sha256": "0a7eb0fe31323ab64ffcf675ba0d84145f09f401c71168c551534b214dbba804",
+      "upstream_commits": [
+        "24c6a097b5a270e05c6e99a99da66b91be81fd7d",
+        "43c4c349149c77f27c8e5801755a7b8883a70ebe",
+        "8a399e2f60037ed07a55278e39b20e43dea4f0c2",
+        "422e7d54375889484b66962d1dcbc392a6bd9e7a",
+        "213094b5d1af7e6ab294a6d8f3b50cafb72642ae",
+        "8cd3fa428b56352beaa38df756c1d3f1556f5514",
+        "00eb60c28815e22690834b2e3951ded0cd300b8d",
+        "21316fdc799932ff43fa00a6d6a45b16dbd77844",
+        "31bda717d7777b8b6cf542af2730651ad6bb4839"
+      ],
+      "adaptation": "Preserve OnePlus trace hooks and the nonblocking SLAB_STORE_USER tracking path."
     }
   ]
 }
