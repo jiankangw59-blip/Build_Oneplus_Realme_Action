@@ -1,0 +1,25 @@
+name: Ace 6 Linux mount propagation control
+
+on:
+  push:
+    branches:
+      - codex/ace6-susfs-mount-id-owner-20261127
+    paths:
+      - .github/workflows/ace6-mount-gap-control.yml
+      - ci/ace6-mount-gap/peer-group-control.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  peer-groups:
+    if: github.ref == 'refs/heads/codex/ace6-susfs-mount-id-owner-20261127'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Verify peer group release and reuse on Linux
+        run: sudo sh ci/ace6-mount-gap/peer-group-control.sh
