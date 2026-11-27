@@ -1016,7 +1016,7 @@ static void frame_test_fas_tuning_hot_change(struct kunit *test)
 	status = kunit_kzalloc(test, FP_STATUS_SIZE, GFP_KERNEL);
 	KUNIT_ASSERT_NOT_NULL(test, status);
 	KUNIT_ASSERT_GT(test, format_policy_status(status, FP_STATUS_SIZE, &activity), 0);
-	KUNIT_EXPECT_NOT_NULL(test, strstr(status, "fas_util_limit_mfps=3000\nfas_margin_applied_mfps=3000\n"));
+	KUNIT_EXPECT_NOT_NULL(test, strstr(status, "fas_util_limit_mfps=3000\nfas_margin_selected_mfps=3000\n"));
 	fas_feedback = (struct fp_fas_feedback){ .util_sample_ns = last_frame_ns,
 		.util_offset_mfps = -3000 };
 	KUNIT_ASSERT_EQ(test, set_fas_tuning(&next), 0);
@@ -1053,7 +1053,7 @@ static void frame_test_fas_tuning_hot_change(struct kunit *test)
 	KUNIT_EXPECT_EQ(test, freq_qos_read_value(&fp_test_policy->constraints, FREQ_QOS_MAX), 3000000);
 	KUNIT_ASSERT_GT(test, format_policy_status(status, FP_STATUS_SIZE, &activity), 0);
 	KUNIT_EXPECT_NOT_NULL(test, strstr(status, ",fas_mode_strength_v1\n"));
-	KUNIT_EXPECT_NOT_NULL(test, strstr(status, "fas_util_limit_mfps=0\nfas_margin_applied_mfps=0\n"));
+	KUNIT_EXPECT_NOT_NULL(test, strstr(status, "fas_util_limit_mfps=0\nfas_margin_selected_mfps=0\n"));
 }
 
 static void frame_test_fas_overflow_releases_votes(struct kunit *test)

@@ -2657,7 +2657,7 @@ static int format_policy_status(char *status, size_t capacity, const struct sab_
 		"fas_steps=%llu\nfas_late_steps=%llu\nfas_overflows=%llu\n"
 		"fas_effective_mfps=%u\nfas_last_adjustment=%lld\n"
 		"fas_mode=%u\nfas_margin_base_mfps=%u\nfas_util_offset_mfps=%d\n"
-		"fas_util_limit_mfps=%u\nfas_margin_applied_mfps=%u\n"
+		"fas_util_limit_mfps=%u\nfas_margin_selected_mfps=%u\n"
 		"fas_task_samples=%llu\nfas_task_sample_errors=%llu\nfas_task_rollbacks=%llu\n"
 		"fas_util_valid=%u\nfas_util_permille=%u\nfas_critical_mask=%016llx\nrender_cpu=%d\n"
 		"gpu_samples=%llu\ngpu_unknown=%llu\ngpu_level=%u\ngpu_pending_ns=%llu\n"
