@@ -82,6 +82,10 @@ jobs:
           python3 efficiency/frame_policy/test_fas_tuning.py
           python3 efficiency/frame_policy/test_kunit_coverage.py
           python3 efficiency/thread_affinity/test_snapshot_growth.py
+          python3 efficiency/thread_affinity/test_affinity_errors.py
+          cc -std=c11 -O2 -Wall -Wextra -Werror \
+            efficiency/thread_affinity/affinityctl.c efficiency/thread_affinity/adaptive_watch.c \
+            -o "$RUNNER_TEMP/affinityctl-host"
       - name: Compile against the pinned ARM64 6.6.118 kernel
         run: |
           set -euo pipefail
@@ -98,5 +102,6 @@ jobs:
           make -s -C "$kernel" O="$out" ARCH=arm64 LLVM=1 gki_defconfig
           grep -qx CONFIG_FRAME_POLICY=y "$out/.config"
           make -s -C "$kernel" -j2 O="$out" ARCH=arm64 LLVM=1 \
-            kernel/sched/frame_policy/built-in.a kernel/sched/ace6_thread_affinity.o
+            kernel/sched/frame_policy/built-in.a kernel/sched/ace6_thread_affinity.o \
+            kernel/sched/core.o
           llvm-ar t "$out/kernel/sched/frame_policy/built-in.a"

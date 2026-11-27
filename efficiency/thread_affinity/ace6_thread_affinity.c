@@ -4,6 +4,7 @@
 #include <linux/binfmts.h>
 #include <linux/cgroup.h>
 #include <linux/cpuset.h>
+#include <linux/cred.h>
 #include <linux/fs.h>
 #include <linux/hashtable.h>
 #include <linux/jiffies.h>
@@ -18,6 +19,7 @@
 #include <linux/sched/signal.h>
 #include <linux/sched/stat.h>
 #include <linux/sched/task.h>
+#include <linux/seq_file.h>
 #include <linux/sort.h>
 #include <linux/threads.h>
 #include <linux/tracepoint.h>
@@ -38,6 +40,7 @@
 #define GAME_ENTRY_SAMPLES 2
 #define GAME_SAMPLES 16
 #define GAME_THIRD_HITS 8
+#define AFFINITY_ERROR_CAPACITY 64
 
 struct affinity_state {
 	cpumask_t effective;
@@ -50,6 +53,31 @@ struct thread_lease {
 	struct task_struct *task;
 	struct affinity_state original;
 	struct affinity_state applied;
+};
+
+enum affinity_phase {
+	PHASE_APPLY,
+	PHASE_INHERIT_RESTORE,
+	PHASE_LEASE_RESTORE,
+	PHASE_LEASE_ALLOC,
+};
+
+struct affinity_error {
+	u64 sequence, boottime_ns;
+	unsigned int revision, flags;
+	enum affinity_phase phase;
+	int error;
+	pid_t tid, tgid;
+	uid_t uid;
+	char comm[TASK_COMM_LEN];
+	cpumask_t target, request, effective;
+	bool has_request;
+};
+
+struct affinity_error_history {
+	u64 failed, exit_skipped;
+	struct affinity_error errors[AFFINITY_ERROR_CAPACITY];
+	struct affinity_error last_exit;
 };
 
 struct task_event {
@@ -96,6 +124,7 @@ struct task_snapshot {
 static struct task_snapshot snapshot = { .capacity = INITIAL_SNAPSHOT };
 static struct task_snapshot scene_groups = { .capacity = INITIAL_SCENE_GROUPS };
 static bool enabled;
+static bool affinity_initialized;
 static unsigned int revision;
 static unsigned int validated;
 static unsigned int lease_count;
@@ -103,7 +132,8 @@ static unsigned int context_switches;
 static u64 scene_source_epoch;
 static unsigned int scene_captured_groups, scene_captured_threads;
 static atomic_t pending;
-static atomic_long_t dropped, changed, clamped, failed, adapted;
+static atomic_long_t dropped, changed, clamped, adapted;
+static struct affinity_error_history affinity_errors;
 
 static struct thread_lease *find_lease(struct task_struct *task)
 {
@@ -184,9 +214,51 @@ static bool process_name(struct task_struct *task, char name[PROCESS_NAME_LEN])
 #include "ace6_sched_affinity.h"
 #endif
 
+enum affinity_result {
+	AFFINITY_APPLIED,
+	AFFINITY_FAILED,
+	AFFINITY_EXITING,
+};
+
+static void record_affinity_error(struct task_struct *task, enum affinity_phase phase,
+				  int error, const struct cpumask *target,
+				  const struct cpumask *request, bool exiting)
+{
+	struct affinity_error *record;
+	unsigned long irq_flags;
+	u64 sequence;
+
+	lockdep_assert_held(&policy_lock);
+	if (exiting) {
+		sequence = ++affinity_errors.exit_skipped;
+		record = &affinity_errors.last_exit;
+	} else {
+		sequence = ++affinity_errors.failed;
+		record = &affinity_errors.errors[(sequence - 1) % AFFINITY_ERROR_CAPACITY];
+	}
+	record->sequence = sequence;
+	record->boottime_ns = ktime_get_boottime_ns();
+	record->revision = revision;
+	record->phase = phase;
+	record->error = error;
+	record->tid = task_pid_nr(task);
+	record->tgid = task_tgid_nr(task);
+	record->uid = from_kuid(&init_user_ns, task_uid(task));
+	record->flags = READ_ONCE(task->flags);
+	get_task_comm(record->comm, task);
+	cpumask_copy(&record->target, target);
+	record->has_request = request != NULL;
+	if (request)
+		cpumask_copy(&record->request, request);
+	raw_spin_lock_irqsave(&task->pi_lock, irq_flags);
+	cpumask_copy(&record->effective, &task->cpus_mask);
+	raw_spin_unlock_irqrestore(&task->pi_lock, irq_flags);
+}
+
 /* Leave the task in its current Android cpuset. */
-static int apply_mask(struct task_struct *task, const struct cpumask *target,
-		      const struct cpumask *user_request, struct affinity_state *applied)
+static int set_mask(struct task_struct *task, const struct cpumask *target,
+		    const struct cpumask *user_request, struct affinity_state *applied,
+		    bool *exiting)
 {
 #ifdef MODULE
 	cpumask_t allowed;
@@ -213,31 +285,44 @@ static int apply_mask(struct task_struct *task, const struct cpumask *target,
 	}
 	if (!cpumask_equal(target, &applied->effective))
 		atomic_long_inc(&clamped);
-	return ret;
 #else
 	const struct cred *saved;
 	int ret;
 
 	/* Use the loading client's security identity in asynchronous workers. */
 	saved = override_creds(policy_cred);
-	ret = ace6_set_task_affinity(task, target, user_request);
+	ret = ace6_set_task_affinity(task, target, user_request, exiting);
 	revert_creds(saved);
 	if (!ret) {
 		read_affinity(task, applied);
 		if (!cpumask_equal(target, &applied->effective))
 			atomic_long_inc(&clamped);
 	}
-	return ret;
 #endif
+	return ret;
 }
 
-static int restore_mask(struct task_struct *task, const struct affinity_state *original)
+static enum affinity_result apply_mask(struct task_struct *task, enum affinity_phase phase,
+				       const struct cpumask *target, const struct cpumask *user_request,
+				       struct affinity_state *applied)
+{
+	bool exiting = false;
+	int ret = set_mask(task, target, user_request, applied, &exiting);
+
+	if (!ret)
+		return AFFINITY_APPLIED;
+	record_affinity_error(task, phase, ret, target, user_request, exiting);
+	return exiting ? AFFINITY_EXITING : AFFINITY_FAILED;
+}
+
+static void restore_mask(struct task_struct *task, enum affinity_phase phase,
+			 const struct affinity_state *original)
 {
 	struct affinity_state applied;
 	const struct cpumask *request = original->has_request ? &original->requested : NULL;
 	const struct cpumask *mask = request ? request : &original->effective;
 
-	return apply_mask(task, mask, request, &applied);
+	apply_mask(task, phase, mask, request, &applied);
 }
 
 static bool owns_affinity(const struct affinity_state *applied,
@@ -257,9 +342,8 @@ static void restore_lease(struct thread_lease *lease)
 		struct affinity_state observed;
 
 		read_affinity(lease->task, &observed);
-		if (owns_affinity(&lease->applied, &observed) &&
-		    restore_mask(lease->task, &lease->original))
-			atomic_long_inc(&failed);
+		if (owns_affinity(&lease->applied, &observed))
+			restore_mask(lease->task, PHASE_LEASE_RESTORE, &lease->original);
 	}
 	free_lease(lease);
 }
@@ -364,8 +448,8 @@ static void apply_task(struct task_struct *task, struct task_struct *parent, con
 	if (!requested) {
 		if (lease)
 			restore_lease(lease);
-		else if (!same_affinity(&original, &observed) && restore_mask(task, &original))
-			atomic_long_inc(&failed);
+		else if (!same_affinity(&original, &observed))
+			restore_mask(task, PHASE_INHERIT_RESTORE, &original);
 		return;
 	}
 	if (lease && !owns_affinity(&lease->applied, &observed)) {
@@ -386,7 +470,8 @@ static void apply_task(struct task_struct *task, struct task_struct *parent, con
 			return;
 		lease = kzalloc(sizeof(*lease), GFP_KERNEL);
 		if (!lease) {
-			atomic_long_inc(&failed);
+			record_affinity_error(task, PHASE_LEASE_ALLOC, -ENOMEM,
+					      requested, requested, false);
 			return;
 		}
 		get_task_struct(task);
@@ -397,10 +482,13 @@ static void apply_task(struct task_struct *task, struct task_struct *parent, con
 		lease_count++;
 	}
 	if (!cpumask_equal(&observed.effective, &effective)) {
-		if (apply_mask(task, requested, requested, &lease->applied)) {
-			atomic_long_inc(&failed);
+		enum affinity_result result;
+
+		result = apply_mask(task, PHASE_APPLY, requested, requested, &lease->applied);
+		if (result == AFFINITY_EXITING)
+			free_lease(lease);
+		if (result != AFFINITY_APPLIED)
 			return;
-		}
 		atomic_long_inc(&changed);
 		if (automatic)
 			atomic_long_inc(&adapted);
@@ -871,6 +959,7 @@ static int replace_policy(struct affinity_policy *next)
 	if (!next->count) {
 		release_policy();
 		free_policy(next);
+		revision++;
 		goto out;
 	}
 	WRITE_ONCE(enabled, true);
@@ -891,10 +980,9 @@ static int replace_policy(struct affinity_policy *next)
 		if (READ_ONCE(lease->task->flags) & PF_EXITING)
 			free_lease(lease);
 	}
+	revision++;
 	apply_snapshot(NULL, false);
 out:
-	if (!ret)
-		revision++;
 	release_snapshot(&snapshot);
 	mutex_unlock(&policy_lock);
 	return ret;
@@ -1032,20 +1120,20 @@ static ssize_t control_write(struct file *file, const char __user *user,
 static ssize_t control_read(struct file *file, char __user *user,
 			    size_t size, loff_t *offset)
 {
-	char stats[768];
+	char stats[1024];
 	int len;
 
 	mutex_lock(&policy_lock);
 	len = scnprintf(stats, sizeof(stats),
-		"revision=%u\nrules=%u\nvalidated=%u\nleases=%u\npending=%d\nchanged=%ld\nclamped=%ld\nfailed=%ld\ndropped=%ld\n"
+		"revision=%u\nrules=%u\nvalidated=%u\nleases=%u\npending=%d\nchanged=%ld\nclamped=%ld\nfailed=%llu\ndropped=%ld\n"
 		"profile_wire=1\ncontext_windowed=1\nwire_lines=%u\nstored_rules=%u\nprofiles=%u\nprofile_bindings=%u\n"
 		"adaptive=%s\nforeground=%s\ndisplay_off=%u\ncontext_switches=%u\nadapted=%ld\n"
 		"game_tgid=%d\ngame_top=%d,%d,%d\ngame_samples=%u\ngame_finalized=%u\n"
 		"snapshot_capacity=%u\nsnapshot_growths=%u\nscene_group_capacity=%u\n"
-		"scene_captured_groups=%u\nscene_captured_threads=%u\n",
+		"scene_captured_groups=%u\nscene_captured_threads=%u\nexit_skipped=%llu\n",
 		revision, policy ? policy->count : 0, validated, lease_count,
 		atomic_read(&pending), atomic_long_read(&changed),
-		atomic_long_read(&clamped), atomic_long_read(&failed),
+		atomic_long_read(&clamped), affinity_errors.failed,
 		atomic_long_read(&dropped),
 		policy ? policy->wire_lines : 0, policy ? policy->stored_rules : 0,
 		policy ? policy->profile_count : 0, policy ? policy->binding_count : 0,
@@ -1057,7 +1145,7 @@ static ssize_t control_read(struct file *file, char __user *user,
 		game_rank[1] ? task_pid_nr(game_rank[1]) : 0,
 		game_rank[2] ? task_pid_nr(game_rank[2]) : 0, game_passes, game_finalized,
 		snapshot.capacity, snapshot.growths, scene_groups.capacity,
-		scene_captured_groups, scene_captured_threads);
+		scene_captured_groups, scene_captured_threads, affinity_errors.exit_skipped);
 	mutex_unlock(&policy_lock);
 	return simple_read_from_buffer(user, size, offset, stats, len);
 }
@@ -1075,6 +1163,93 @@ static struct miscdevice control = {
 	.name = "ace6_thread_affinity",
 	.fops = &control_ops,
 	.mode = 0600,
+};
+
+static void show_affinity_error(struct seq_file *m, const char *kind,
+			       const struct affinity_error *record)
+{
+	static const char *const phases[] = {
+		[PHASE_APPLY] = "apply",
+		[PHASE_INHERIT_RESTORE] = "inherit_restore",
+		[PHASE_LEASE_RESTORE] = "lease_restore",
+		[PHASE_LEASE_ALLOC] = "lease_alloc",
+	};
+
+	seq_printf(m, "%s seq=%llu boottime_ns=%llu revision=%u phase=%s errno=%d"
+		   " tid=%d tgid=%d uid=%u flags=0x%x comm=",
+		   kind, record->sequence, record->boottime_ns, record->revision,
+		   phases[record->phase], record->error, record->tid, record->tgid,
+		   record->uid, record->flags);
+	seq_escape(m, record->comm, " \\=\t\r\n\v\f\b\x1b");
+	seq_printf(m, " target=%*pbl effective=%*pbl request=",
+		   cpumask_pr_args(&record->target), cpumask_pr_args(&record->effective));
+	if (record->has_request)
+		seq_printf(m, "%*pbl\n", cpumask_pr_args(&record->request));
+	else
+		seq_puts(m, "-\n");
+}
+
+static int affinity_errors_show(struct seq_file *m, void *unused)
+{
+	const struct affinity_error_history *history = m->private;
+	unsigned int retained = min_t(u64, history->failed, AFFINITY_ERROR_CAPACITY);
+	u64 overwritten = history->failed - retained;
+	unsigned int i;
+
+	seq_printf(m, "format=1 failed=%llu retained=%u overwritten=%llu exit_skipped=%llu\n",
+		   history->failed, retained, overwritten, history->exit_skipped);
+	for (i = 0; i < retained; i++)
+		show_affinity_error(m, "error",
+				   &history->errors[(overwritten + i) % AFFINITY_ERROR_CAPACITY]);
+	if (history->exit_skipped)
+		show_affinity_error(m, "exit", &history->last_exit);
+	return 0;
+}
+
+static int affinity_errors_open(struct inode *inode, struct file *file)
+{
+	struct affinity_error_history *copy;
+	int ret;
+
+	if (file->f_mode & FMODE_WRITE)
+		return -EACCES;
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (!smp_load_acquire(&affinity_initialized))
+		return -ENODEV;
+	copy = kvmalloc(sizeof(*copy), GFP_KERNEL);
+	if (!copy)
+		return -ENOMEM;
+	mutex_lock(&policy_lock);
+	*copy = affinity_errors;
+	mutex_unlock(&policy_lock);
+	ret = single_open(file, affinity_errors_show, copy);
+	if (ret)
+		kvfree(copy);
+	return ret;
+}
+
+static int affinity_errors_release(struct inode *inode, struct file *file)
+{
+	struct seq_file *m = file->private_data;
+
+	kvfree(m->private);
+	return single_release(inode, file);
+}
+
+static const struct file_operations affinity_errors_ops = {
+	.owner = THIS_MODULE,
+	.open = affinity_errors_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = affinity_errors_release,
+};
+
+static struct miscdevice affinity_errors_device = {
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "ace6_thread_affinity_errors",
+	.fops = &affinity_errors_ops,
+	.mode = 0400,
 };
 
 static int __init affinity_init(void)
@@ -1109,9 +1284,16 @@ static int __init affinity_init(void)
 		if (ret)
 			goto unregister;
 	}
+	ret = misc_register(&affinity_errors_device);
+	if (ret)
+		goto unregister;
 	ret = misc_register(&control);
-	if (!ret)
+	if (!ret) {
+		/* Expose diagnostic opens only after every registration has succeeded. */
+		smp_store_release(&affinity_initialized, true);
 		return 0;
+	}
+	misc_deregister(&affinity_errors_device);
 unregister:
 	while (i--)
 		tracepoint_probe_unregister(hooks[i].tp, hooks[i].probe, NULL);
@@ -1128,7 +1310,9 @@ static void __exit affinity_exit(void)
 {
 	unsigned int i;
 
+	smp_store_release(&affinity_initialized, false);
 	misc_deregister(&control);
+	misc_deregister(&affinity_errors_device);
 	for (i = 0; i < ARRAY_SIZE(hooks); i++)
 		tracepoint_probe_unregister(hooks[i].tp, hooks[i].probe, NULL);
 	tracepoint_synchronize_unregister();

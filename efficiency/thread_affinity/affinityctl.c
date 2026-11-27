@@ -11,6 +11,7 @@
 #include "adaptive_watch.h"
 
 #define DEVICE "/dev/ace6_thread_affinity"
+#define ERRORS_DEVICE "/dev/ace6_thread_affinity_errors"
 #define MAX_BYTES (512 * 1024)
 #define MAX_PROFILES 512
 #define STATUS_BYTES 1536
@@ -268,6 +269,37 @@ static int status(void)
 	return fwrite(data, 1, (size_t)n, stdout) != (size_t)n;
 }
 
+static int errors(void)
+{
+	char data[4096];
+	int fd = open(ERRORS_DEVICE, O_RDONLY | O_CLOEXEC);
+	int result = 0;
+
+	if (fd < 0) {
+		perror(ERRORS_DEVICE);
+		return 1;
+	}
+	for (;;) {
+		ssize_t n = read(fd, data, sizeof(data));
+
+		if (n < 0 && errno == EINTR)
+			continue;
+		if (n < 0) {
+			perror(ERRORS_DEVICE);
+			result = 1;
+			break;
+		}
+		if (!n)
+			break;
+		if (fwrite(data, 1, (size_t)n, stdout) != (size_t)n) {
+			result = 1;
+			break;
+		}
+	}
+	close(fd);
+	return fflush(stdout) == EOF || result;
+}
+
 int main(int argc, char **argv)
 {
 	bool check = argc == 3 && !strcmp(argv[1], "check");
@@ -283,6 +315,8 @@ int main(int argc, char **argv)
 
 	if (argc == 2 && !strcmp(argv[1], "status"))
 		return status();
+	if (argc == 2 && !strcmp(argv[1], "errors"))
+		return errors();
 	if ((argc == 2 || argc == 4) && !strcmp(argv[1], "watch"))
 		return watch_context(argc == 4 ? argv[2] : SCENE_PATH, argc == 4 ? argv[3] : DISPLAY_PATH, NULL);
 	if ((argc == 2 || argc == 5) && !strcmp(argv[1], "watch-games"))
@@ -290,7 +324,7 @@ int main(int argc, char **argv)
 				     argc == 5 ? argv[4] : "/data/user/0/com.omarea.vtools/shared_prefs/games.xml");
 	if (!check && !load && !adaptive && !dump && !dump_compact && !clear) {
 		fprintf(stderr,
-			"Usage: %s status | clear | {check,load,dump,dump-compact} RULE_DIRECTORY\n"
+			"Usage: %s status | errors | clear | {check,load,dump,dump-compact} RULE_DIRECTORY\n"
 			"       %s adapt-load RULE_DIRECTORY [PROCESS_PATTERN]\n"
 			"       %s watch [SCENE_FILE BRIGHTNESS_FILE]\n"
 			"       %s watch-games [SCENE_FILE BRIGHTNESS_FILE GAMES_FILE]\n",
