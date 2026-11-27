@@ -71,7 +71,20 @@ async function refresh() {
   editor.value = text.slice(split + 1);
   showFasSettings(JSON.parse(editor.value));
   fasEditError = "";
-  document.getElementById("status").textContent = await execute(`${backend} status`);
+  const rawStatus = await execute(`${backend} status`);
+  document.getElementById("status").textContent = rawStatus;
+  const status = rawStatus.replace(/\r/g, "");
+  const features = (status.match(/^features=(.*)$/m)?.[1] ?? "").split(",");
+  const strength = features.includes("fas_mode_strength_v1");
+  const limit = status.match(/^fas_util_limit_mfps=(\d+)$/m)?.[1];
+  const currentLimit = limit !== undefined && /^configured=1$/m.test(status)
+    ? ` 当前生效档位最多再下调 ${Number(limit) / 1000} FPS。` : "";
+  document.getElementById("fasStrength").hidden = !strength;
+  document.getElementById("fasStrengthNote").textContent = strength
+    ? `60 FPS 起按基础值扣减，低于 60 FPS 按比例折算。表内为稳帧调度目标，实际帧率取决于游戏、负载和温控。${currentLimit}`
+    : features.includes("fas_tuning")
+      ? "当前内核使用旧版 FAS。高帧率档位按「帧率 ÷ 60」放大基础余量，自适应最多再下调 3 FPS。"
+      : "当前状态未报告 FAS 调优能力。";
 }
 async function run(task) {
   if (busy) return;

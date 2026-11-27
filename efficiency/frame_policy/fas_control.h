@@ -43,13 +43,22 @@ static inline u32 fp_fas_margin(const struct fp_fas_tuning *tuning, u32 fps)
 	for (i = 0; i < tuning->override_count; i++)
 		if (tuning->overrides[i].fps == fps)
 			return tuning->overrides[i].margin_mfps;
-	return (u64)tuning->margin_base_mfps * fps / 60;
+	return fps >= 60 ? tuning->margin_base_mfps : (u64)tuning->margin_base_mfps * fps / 60;
+}
+
+static inline u32 fp_fas_util_limit(u32 mode)
+{
+	static const u32 limits[] = { 3000, 500, 200, 0 };
+
+	return mode < FP_FAS_MODES ? limits[mode] : 0;
 }
 
 /* Called by real frame work; elapsed idle time never produces catch-up ticks. */
 static inline void fp_fas_util_event(struct fp_fas_feedback *state, u64 now,
-				      u32 util_permille)
+				      u32 util_permille, u32 mode)
 {
+	__s32 floor = -(__s32)fp_fas_util_limit(mode);
+
 	if (!state->util_sample_ns || now < state->util_sample_ns) {
 		state->util_sample_ns = now;
 		return;
@@ -63,8 +72,8 @@ static inline void fp_fas_util_event(struct fp_fas_feedback *state, u64 now,
 		state->util_offset_mfps -= 100;
 	else if (util_permille >= 650)
 		state->util_offset_mfps += 100;
-	if (state->util_offset_mfps < -3000)
-		state->util_offset_mfps = -3000;
+	if (state->util_offset_mfps < floor)
+		state->util_offset_mfps = floor;
 	if (state->util_offset_mfps > 0)
 		state->util_offset_mfps = 0;
 }

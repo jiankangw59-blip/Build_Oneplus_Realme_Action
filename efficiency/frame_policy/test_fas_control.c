@@ -8,13 +8,15 @@ int main(void)
 {
 	struct fp_fas_tuning tuning = { .abi = FP_FAS_ABI, .mode = 1, .margin_base_mfps = 1000 };
 	struct fp_fas_feedback state = {};
-	u32 i;
+	const u32 bases[] = { 3000, 1000, 300, 0 };
+	const __s32 floors[] = { -3000, -500, -200, 0 };
+	u32 i, mode;
 
 	assert(sizeof(tuning) == 80);
 	assert(fp_fas_tuning_valid(&tuning));
 	assert(fp_fas_margin(&tuning, 60) == 1000);
-	assert(fp_fas_margin(&tuning, 165) == 2750);
-	assert(fp_fas_effective_rate(&tuning, &state, 120) == 118000);
+	assert(fp_fas_margin(&tuning, 165) == 1000);
+	assert(fp_fas_effective_rate(&tuning, &state, 120) == 119000);
 	assert(fp_fas_proportional(16666667, 59000) == -4999);
 	assert(fp_fas_proportional(20000000, 60000) == 60000);
 	assert(fp_fas_proportional(0, 60000) == 0);
@@ -25,15 +27,28 @@ int main(void)
 	tuning.overrides[0].margin_mfps = 300;
 	assert(fp_fas_tuning_valid(&tuning));
 	assert(fp_fas_effective_rate(&tuning, &state, 165) == 164700);
-	assert(fp_fas_margin(&tuning, 120) == 2000);
+	assert(fp_fas_margin(&tuning, 120) == 1000);
+	for (mode = 0; mode < FP_FAS_MODES; mode++) {
+		struct fp_fas_feedback feedback = {};
+
+		tuning.mode = mode;
+		tuning.margin_base_mfps = bases[mode];
+		assert(fp_fas_margin(&tuning, 165) == 300); /* Absolute override. */
+		assert(fp_fas_margin(&tuning, 60) == bases[mode]);
+		assert(fp_fas_margin(&tuning, 30) == bases[mode] / 2);
+		assert(fp_fas_util_limit(mode) == (u32)-floors[mode]);
+		for (i = 1; i < 50; i++)
+			fp_fas_util_event(&feedback, (u64)i * 1000000000ULL, 500, mode);
+		assert(feedback.util_offset_mfps == floors[mode]);
+	}
 	for (i = 1; i < 50; i++)
-		fp_fas_util_event(&state, (u64)i * 1000000000ULL, 500);
+		fp_fas_util_event(&state, (u64)i * 1000000000ULL, 500, 0);
 	assert(state.util_offset_mfps == -3000);
-	fp_fas_util_event(&state, 49500000000ULL, 1000);
+	fp_fas_util_event(&state, 49500000000ULL, 1000, 0);
 	assert(state.util_offset_mfps == -3000);
-	fp_fas_util_event(&state, 100000000000ULL, 1000);
+	fp_fas_util_event(&state, 100000000000ULL, 1000, 0);
 	assert(state.util_offset_mfps == -2900); /* One real event, no idle catch-up loop. */
-	fp_fas_util_event(&state, 101000000000ULL, 100);
+	fp_fas_util_event(&state, 101000000000ULL, 100, 0);
 	assert(state.util_offset_mfps == 0);
 	assert(fp_fas_common_target(2000000, 1800000, 250, true, false, -5000, 4320000) == 900000);
 	assert(fp_fas_common_target(2000000, 1800000, 250, true, true, 60000, 4320000) == 2060000);

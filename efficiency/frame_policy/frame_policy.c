@@ -1789,12 +1789,19 @@ static bool run_fas_batch(const struct fp_fas_event *events, unsigned int count,
 
 		if (!event->late)
 			fp_fas_util_event(&state->feedback, event->ended_ns,
-					  state->util_valid ? state->util_permille : 0);
+					  state->util_valid ? state->util_permille : 0, fas_tuning.mode);
+		if (!state->util_valid)
+			state->feedback.util_offset_mfps = 0;
 		state->effective_mfps = fp_fas_effective_rate_margin(&state->feedback,
 							     event->fps, event->margin_mfps);
 		state->last_adjustment = fp_fas_proportional(event->interval_ns, state->effective_mfps);
-		if (event->janked)
+		/* The current frame used the prior sample. Subsequent events must
+		 * not carry its offset after jank invalidates that sample.
+		 */
+		if (event->janked) {
 			state->util_valid = false;
+			state->feedback.util_offset_mfps = 0;
+		}
 		for (i = 0; i < cpu_count; i++)
 			previous_max = max(previous_max, targets[i]);
 		common = fp_fas_common_target(previous_max, actual_max, state->util_permille,
@@ -2503,6 +2510,8 @@ static int set_fas_tuning(const struct fp_fas_tuning *next)
 	if (!fp_fas_tuning_valid(next))
 		return -EINVAL;
 	mutex_lock(&config_lock);
+	if (fas_tuning.mode != next->mode)
+		reset_fas_feedback();
 	spin_lock_irqsave(&frame_lock, flags);
 	fas_tuning = *next;
 	spin_unlock_irqrestore(&frame_lock, flags);
@@ -2641,13 +2650,14 @@ static int format_policy_status(char *status, size_t capacity, const struct sab_
 	spin_unlock_irqrestore(&frame_lock, flags);
 	length = scnprintf(status, capacity,
 		"abi=%u\nconfigured=%u\nobserve=%u\nowner=%s\nforeground=%s\n"
-		"features=cpu,scene_pmu,game_frames,gpu,gpu_file_credentials,game_relations,fps_per_game,scene_table,scene_activity,scene_aux,fas_common_p,fas_tuning,fas_task_util\n"
+		"features=cpu,scene_pmu,game_frames,gpu,gpu_file_credentials,game_relations,fps_per_game,scene_table,scene_activity,scene_aux,fas_common_p,fas_tuning,fas_task_util,fas_mode_strength_v1\n"
 		"game_pid=%d\nprobe=%u\ngeneration=%llu\napplied_generation=%llu\n"
 		"frames=%llu\nselected_frames=%llu\nframe_errors=%llu\nlevel=%u\n"
 		"qualified_fps=%u\n"
 		"fas_steps=%llu\nfas_late_steps=%llu\nfas_overflows=%llu\n"
 		"fas_effective_mfps=%u\nfas_last_adjustment=%lld\n"
 		"fas_mode=%u\nfas_margin_base_mfps=%u\nfas_util_offset_mfps=%d\n"
+		"fas_util_limit_mfps=%u\nfas_margin_applied_mfps=%u\n"
 		"fas_task_samples=%llu\nfas_task_sample_errors=%llu\nfas_task_rollbacks=%llu\n"
 		"fas_util_valid=%u\nfas_util_permille=%u\nfas_critical_mask=%016llx\nrender_cpu=%d\n"
 		"gpu_samples=%llu\ngpu_unknown=%llu\ngpu_level=%u\ngpu_pending_ns=%llu\n"
@@ -2676,6 +2686,7 @@ static int format_policy_status(char *status, size_t capacity, const struct sab_
 		applied_generation, frames, used, errors, level, fps,
 		fas_steps, fas_late_steps, overflows, fas_effective_mfps, fas_last_adjustment,
 		fas_tuning.mode, fas_tuning.margin_base_mfps, fas_feedback.util_offset_mfps,
+		fp_fas_util_limit(fas_tuning.mode), fp_fas_margin(&fas_tuning, fps),
 		fas_task_samples, fas_task_sample_errors, fas_task_rollbacks,
 		fas_util_valid, fas_util_permille, fas_critical_mask, renderer,
 		gpu_count, gpu_missing, gpu_level, gpu_average,

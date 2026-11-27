@@ -8,6 +8,7 @@ textarea{height:48vh;font:13px monospace}pre{white-space:pre-wrap;font-size:13px
 #message[data-error=true]{color:#ffadad}button:disabled{opacity:.5}
 label{display:block;margin:10px 0}input,select{background:#192631;color:#e5edf3;border:1px solid #3c5262;border-radius:6px;padding:8px}
 #fasOverrides{height:85px}fieldset{border:1px solid #3c5262;border-radius:8px;margin:14px 0}
+#fasStrength th,#fasStrength td{text-align:left;padding:5px 8px}#fasStrength caption{text-align:left;margin-bottom:5px}
 </style>
 <h1>原生帧调度配置</h1>
 <p>开机一次载入，调度由内核执行。目标帧率可按游戏设置，请同时开启游戏内对应帧率。</p>
@@ -17,10 +18,21 @@ label{display:block;margin:10px 0}input,select{background:#192631;color:#e5edf3;
 <p>随 Scene 辅助调度启用，仅调整 GPU 启动最低和默认档位；负载升频和温控继续工作。</p>
 <fieldset><legend>游戏 FAS 模式</legend>
 <label>模式 <select id="fasMode"><option value="powersave">省电 powersave</option><option value="balance">均衡 balance</option><option value="performance">性能 performance</option><option value="fast">快速 fast</option></select></label>
-<label>基础帧率余量（FPS，可留空使用模式默认值） <input id="fasMarginBase" type="number" min="0" max="30" step="0.001"></label>
+<label>基础帧率余量（FPS，留空随档） <input id="fasMarginBase" type="number" min="0" max="30" step="0.001"></label>
 <label>按帧率覆盖余量（可选，例如 {"165":0.3}）<textarea id="fasOverrides" spellcheck="false" aria-label="FAS 按帧率余量覆盖">{}</textarea></label>
 <label>未单独配置游戏的帧率（留空沿用全局） <input id="fallbackFps" type="text" placeholder="30, 45, 60, 90, 120, 130, 144, 165" aria-label="未单独配置游戏的帧率"></label>
-<p>FAS 模式只作用于游戏，与下方的 Scene 模式独立。余量留空时，省电、均衡、性能、快速的基础值分别为 3、1、0.3、0 FPS。</p>
+<p>省电、均衡、性能、快速的默认基础余量依次为 3、1、0.3、0 FPS。基础余量留空且覆盖为 {} 时随档；填入基础值后切档仍使用该值。匹配的帧率覆盖优先，使用填写的绝对余量。</p>
+<p id="fasStrengthNote" aria-live="polite">正在读取内核 FAS 能力…</p>
+<table id="fasStrength" hidden>
+<caption>165 FPS 的默认档位示例（单位 FPS）</caption>
+<thead><tr><th scope="col">模式</th><th scope="col">额外下调上限</th><th scope="col">内部目标</th></tr></thead>
+<tbody>
+<tr><th scope="row">省电</th><td>3</td><td>159–162</td></tr>
+<tr><th scope="row">均衡</th><td>0.5</td><td>163.5–164</td></tr>
+<tr><th scope="row">性能</th><td>0.2</td><td>164.5–164.7</td></tr>
+<tr><th scope="row">快速</th><td>0</td><td>165</td></tr>
+</tbody>
+</table>
 </fieldset>
 <textarea id="editor" spellcheck="false" aria-label="调度配置"></textarea>
 <div><button id="save">保存并应用</button><button id="refresh">刷新</button><button id="rollback">恢复上次配置</button></div>

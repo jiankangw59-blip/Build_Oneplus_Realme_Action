@@ -52,7 +52,7 @@ int main(void)
 		.ended_ns = 2, .interval_ns = 8333333, .fps = 120,
 		.margin_mfps = fp_fas_margin(&fast, 120),
 	}));
-	assert(fp_fas_event_pop(&queue, &event) && event.margin_mfps == 2000);
+	assert(fp_fas_event_pop(&queue, &event) && event.margin_mfps == 1000);
 	assert(fp_fas_event_pop(&queue, &event) && !event.margin_mfps);
 	puts("FAS history: long-frame recovery, five-second window and ordered loss-detecting batching passed");
 	return 0;

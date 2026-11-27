@@ -7,7 +7,7 @@ const {test} = require("node:test");
 
 async function app() {
   const elements = Object.create(null), calls = [], packets = [];
-  for (const id of ["editor", "message", "status", "fasMode", "fasMarginBase", "fasOverrides", "fallbackFps", "sceneAux", "sceneGpuLock", "save", "refresh", "rollback"])
+  for (const id of ["editor", "message", "status", "fasMode", "fasMarginBase", "fasOverrides", "fasStrength", "fasStrengthNote", "fallbackFps", "sceneAux", "sceneGpuLock", "save", "refresh", "rollback"])
     elements[id] = {value: "", textContent: "", placeholder: "", dataset: {}, listeners: {},
       addEventListener(name, callback) { this.listeners[name] = callback; }};
   const seed = JSON.parse(fs.readFileSync(path.join(__dirname, "defaults/seed.json"), "utf8"));
@@ -15,6 +15,7 @@ async function app() {
   let settings = JSON.parse(fs.readFileSync(path.join(__dirname, "defaults/settings.json"), "utf8"));
   settings.sceneMode = "performance";
   delete settings.fasMode; // Existing installed settings must remain readable.
+  let status = "features=fas_tuning\nlast_error=0\n";
   let context;
   const window = {ksu: {exec(command, _options, callback) {
     calls.push(command);
@@ -23,7 +24,7 @@ async function app() {
     else if (command.endsWith(" aux-seed")) output = fs.readFileSync(path.join(__dirname, "defaults/scene-aux-seed.json"), "utf8");
     else if (command.endsWith(" seed")) output = JSON.stringify(seed);
     else if (command.endsWith(" read")) output = "a".repeat(64) + "\n" + JSON.stringify(settings);
-    else if (command.endsWith(" status")) output = "features=fas_tuning\nlast_error=0\n";
+    else if (command.endsWith(" status")) output = status;
     else if (command.includes(" save ")) {
       const match = command.match(/printf %s '([A-Za-z0-9+/=]+)'/);
       if (!match) { code = 1; error = "Invalid save envelope"; }
@@ -45,8 +46,23 @@ async function app() {
   for (const name of ["scene_protocol.js", "scene_aux_protocol.js", "protocol.js"])
     vm.runInContext(fs.readFileSync(path.join(__dirname, "webroot", name), "utf8"), context);
   await vm.runInContext(fs.readFileSync(path.join(__dirname, "webroot/app.js"), "utf8"), context);
-  return {elements, calls, packets, settings: () => settings};
+  return {elements, calls, packets, settings: () => settings, setStatus: value => { status = value; }};
 }
+
+test("the running kernel controls the visible FAS strength guidance", async () => {
+  const state = await app(), e = state.elements;
+  assert.equal(e.fasStrength.hidden, true);
+  assert.match(e.fasStrengthNote.textContent, /帧率 ÷ 60.*最多再下调 3 FPS/);
+  state.setStatus("features=fas_tuning,fas_mode_strength_v1_other\nlast_error=0\n");
+  await e.refresh.onclick();
+  assert.equal(e.fasStrength.hidden, true);
+  const raw = "configured=1\r\r\nfeatures=fas_tuning,fas_mode_strength_v1\r\r\nfas_util_limit_mfps=200\r\r\n";
+  state.setStatus(raw);
+  await e.refresh.onclick();
+  assert.equal(e.status.textContent, raw);
+  assert.equal(e.fasStrength.hidden, false);
+  assert.match(e.fasStrengthNote.textContent, /当前生效档位最多再下调 0\.2 FPS/);
+});
 
 test("legacy settings and FAS selector remain independent from Scene", async () => {
   const state = await app(), e = state.elements;
@@ -55,6 +71,8 @@ test("legacy settings and FAS selector remain independent from Scene", async () 
   assert.equal(e.fallbackFps.value, "");
   const advanced = JSON.parse(e.editor.value);
   advanced.sceneBaseMode = "balance";
+  advanced.games = {"org.example.game": [60, 165]};
+  advanced.sceneApps = {"org.example.scene": "powersave"};
   e.editor.value = JSON.stringify(advanced);
   e.editor.listeners.input();
   e.fasMode.value = "fast";
@@ -62,6 +80,9 @@ test("legacy settings and FAS selector remain independent from Scene", async () 
   assert.equal(JSON.parse(e.editor.value).sceneMode, "performance");
   await e.save.onclick();
   assert.equal(state.settings().fasMode, "fast");
+  assert.equal(state.settings().fasMarginFps, undefined);
+  assert.deepEqual(state.settings().games, advanced.games);
+  assert.deepEqual(state.settings().sceneApps, advanced.sceneApps);
   assert.equal(state.settings().sceneMode, "performance");
   assert.equal(state.settings().sceneBaseMode, "balance");
   const packet = state.packets.at(-1), fas = packet.subarray(-80);

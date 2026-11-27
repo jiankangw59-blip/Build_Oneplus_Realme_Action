@@ -44,6 +44,22 @@ FAS mode is independent from Scene: `fasMode` accepts `powersave`, `balance`,
 object such as `{"base":1,"120":0.5,"165":0.3}`. Without an explicit margin the
 four mode bases are 3, 1, 0.3 and 0 FPS. Numbers have at most three decimal places;
 the base is at most 30 FPS, and up to eight per-FPS overrides are accepted.
+
+Open KernelSU Manager → Modules → 原生帧调度配置 → WebUI → 游戏 FAS 模式.
+Choose a mode and use 保存并应用. Leave the base blank and the overrides set to
+`{}` to follow the selected mode. Entering a base keeps that value across mode
+changes. Saving overrides with the base blank stores the selected mode's base
+with the overrides. A matching FPS override supplies an absolute margin and
+takes precedence over the base.
+
+With `fas_mode_strength_v1`, the base is used directly from 60 FPS up and scales
+by FPS / 60 below 60. The four modes allow up to 3, 0.5, 0.2 and 0 FPS of extra
+adaptive reduction. At 165 FPS the default internal targets range from
+159–162, 163.5–164, 164.5–164.7 and 165 FPS, respectively. Actual frame rate
+depends on the game, workload and thermal limits. Earlier FAS-capable kernels
+scale the base by FPS / 60 at every grade and allow up to 3 FPS of extra adaptive
+reduction. The WebUI displays the behavior reported by the running kernel.
+
 Activation requires the exact `fas_tuning` kernel capability. The read-only
 `framectl check-fas` validates capability and the 80-byte tuning before either
 controller is stopped. `load-fas` issues the actual tuning ioctl before the main
